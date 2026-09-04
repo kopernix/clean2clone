@@ -4,7 +4,7 @@
 
 - Repository: <https://github.com/kopernix/clean2clone>
 - Primary program: `clean2clone.sh`
-- Current implemented version: `1.2.1`
+- Current implemented version: `1.2.2`
 - Author: Joan Puiggali aka kopernix
 - Copyright: Copyright (c) 2026 Joan Puiggali aka kopernix
 - License: MIT
@@ -255,8 +255,11 @@ It verifies:
   corresponding units are loaded.
 - A healthy active `ssh.service` or `ssh.socket` with neither unit failed.
 - Structural validity of the OpenSSH systemd units.
-- Every effective OpenSSH private/public host-key pair: existence, non-empty
-  content, matching public material, root ownership, and private mode `0600`.
+- The standard RSA, ECDSA, and Ed25519 OpenSSH private/public host-key pairs:
+  existence, non-empty content, matching public material, root ownership, and
+  private mode `0600`. This check must not call `sshd -T` when `/run/sshd` is
+  absent because Ubuntu's server binary requires that runtime directory even
+  for effective-configuration output.
 - Direct `sshd -t` validation when `/run/sshd` already exists. With a healthy
   inactive socket-activated service, absence of that runtime directory is
   valid because systemd creates it when the service starts; check mode must not
@@ -352,6 +355,12 @@ visibility and makes the post-reboot socket diagnostics more specific. It
 received Bash syntax, CLI, option-conflict, and isolated summary/error-path
 checks. A user-reported Ubuntu 24.04.4 reboot exposed the 1.2.0 defect; a full
 clean, reboot, and successful post-check with 1.2.1 remains required.
+
+Version 1.2.2 makes host-key verification independent of `/run/sshd` by
+checking the standard key pairs directly. It received Bash syntax, CLI, and
+option-conflict checks. A user-reported Ubuntu 24.04.4 post-reboot check exposed
+the false failure caused by using `sshd -T` before `ssh.service` had created its
+runtime directory; a successful real-VM post-check with 1.2.2 remains required.
 
 ## 12. Versioning and changelog
 
