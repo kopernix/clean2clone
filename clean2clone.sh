@@ -20,7 +20,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 AUTO_POWEROFF=0
 ASSUME_YES=0
 CHECK_ONLY=0
@@ -157,23 +157,15 @@ check_machine_identity() {
 }
 
 check_ssh_host_keys() {
-    local effective_config host_key_paths host_key mode owner derived public
+    local host_key mode owner derived public
+    local -a host_key_paths=(
+        /etc/ssh/ssh_host_rsa_key
+        /etc/ssh/ssh_host_ecdsa_key
+        /etc/ssh/ssh_host_ed25519_key
+    )
     local keys_ok=1
 
-    if ! effective_config="$(/usr/sbin/sshd -T 2>&1)"; then
-        record_fail "OpenSSH effective configuration could not be read: ${effective_config//$'\n'/; }"
-        return
-    fi
-
-    if ! host_key_paths="$(awk '$1 == "hostkey" { print $2 }' <<< "$effective_config")" ||
-       [[ -z "$host_key_paths" ]]; then
-        record_fail "OpenSSH has no effective host-key paths"
-        return
-    fi
-
-    while IFS= read -r host_key; do
-        [[ -n "$host_key" ]] || continue
-
+    for host_key in "${host_key_paths[@]}"; do
         if [[ ! -s "$host_key" || ! -s "${host_key}.pub" ]]; then
             keys_ok=0
             continue
@@ -192,12 +184,12 @@ check_ssh_host_keys() {
         fi
         public="$(awk 'NR == 1 { print $1 " " $2 }' "${host_key}.pub" 2>/dev/null || true)"
         [[ "$derived" == "$public" ]] || keys_ok=0
-    done <<< "$host_key_paths"
+    done
 
     if [[ "$keys_ok" -eq 1 ]]; then
-        record_ok "OpenSSH host key pairs exist, match, and have safe permissions"
+        record_ok "OpenSSH standard host key pairs exist, match, and have safe permissions"
     else
-        record_fail "One or more OpenSSH host key pairs are missing, invalid, or unsafe"
+        record_fail "One or more OpenSSH standard host key pairs are missing, invalid, or unsafe"
     fi
 }
 
