@@ -20,7 +20,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.2.2"
+VERSION="1.2.3"
 AUTO_POWEROFF=0
 ASSUME_YES=0
 CHECK_ONLY=0
@@ -178,7 +178,8 @@ check_ssh_host_keys() {
             continue
         fi
 
-        if ! derived="$(ssh-keygen -y -f "$host_key" 2>/dev/null)"; then
+        if ! derived="$(ssh-keygen -y -f "$host_key" 2>/dev/null |
+            awk 'NR == 1 { print $1 " " $2 }')"; then
             keys_ok=0
             continue
         fi
