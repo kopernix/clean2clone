@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-04
+
+### Added
+
+- Add `--check`, a non-destructive post-reboot integrity check that reports all
+  relevant postconditions as `OK` or `FAIL` and exits non-zero on failure.
+- Add an OpenSSH `ssh.socket` drop-in when socket activation is available, so
+  missing host keys are generated during boot-time socket activation rather
+  than waiting for the first incoming connection.
+
+### Changed
+
+- Expand the README, agent instructions, and canonical project specification
+  with the post-reboot verification contract and its honest limitations.
+
 ## [1.1.1] - 2026-09-04
 
 ### Added
