@@ -21,7 +21,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 AUTO_POWEROFF=0
 ASSUME_YES=0
 
@@ -42,6 +42,7 @@ fi
 
 SUMMARY=()
 OK_COUNT=0
+WARN_COUNT=0
 FAIL_COUNT=0
 CURRENT_STEP="Starting"
 SUMMARY_PRINTED=0
@@ -59,8 +60,14 @@ record_fail() {
     FAIL_COUNT=$((FAIL_COUNT + 1))
 }
 
+record_warn() {
+    SUMMARY+=("WARN|$1")
+    WARN_COUNT=$((WARN_COUNT + 1))
+}
+
 print_summary() {
-    [[ "$SUMMARY_PRINTED" -eq 1 ]] && return 0
+    local force="${1:-0}"
+    [[ "$SUMMARY_PRINTED" -eq 1 && "$force" -ne 1 ]] && return 0
     SUMMARY_PRINTED=1
 
     printf '\n%s\n' '===================================================================='
@@ -70,17 +77,19 @@ print_summary() {
     local result status detail
     for result in "${SUMMARY[@]}"; do
         IFS='|' read -r status detail <<< "$result"
-        if [[ "$status" == "OK" ]]; then
-            printf ' %s[OK]%s   %s\n' "$C_GREEN" "$C_RESET" "$detail"
-        else
-            printf ' %s[FAIL]%s %s\n' "$C_RED" "$C_RESET" "$detail"
-        fi
+        case "$status" in
+            OK)   printf ' %s[OK]%s   %s\n' "$C_GREEN" "$C_RESET" "$detail" ;;
+            WARN) printf ' %s[WARN]%s %s\n' "$C_YELLOW" "$C_RESET" "$detail" ;;
+            FAIL) printf ' %s[FAIL]%s %s\n' "$C_RED" "$C_RESET" "$detail" ;;
+        esac
     done
 
     if [[ "$FAIL_COUNT" -eq 0 ]]; then
-        printf '\n %sResult: %d checks passed%s\n' "$C_GREEN" "$OK_COUNT" "$C_RESET"
+        printf '\n %sResult: %d passed, %d warnings%s\n' \
+            "$C_GREEN" "$OK_COUNT" "$WARN_COUNT" "$C_RESET"
     else
-        printf '\n %sResult: %d passed, %d failed%s\n' "$C_RED" "$OK_COUNT" "$FAIL_COUNT" "$C_RESET"
+        printf '\n %sResult: %d passed, %d warnings, %d failed%s\n' \
+            "$C_RED" "$OK_COUNT" "$WARN_COUNT" "$FAIL_COUNT" "$C_RESET"
     fi
     printf '%s\n\n' '===================================================================='
 }
@@ -88,16 +97,16 @@ print_summary() {
 die() {
     printf '\nERROR: %s\n' "$*" >&2
     record_fail "${CURRENT_STEP}: $*"
-    print_summary
+    print_summary 1
     exit 1
 }
 
 on_error() {
     local rc=$?
-    if [[ "$SUMMARY_PRINTED" -eq 0 ]]; then
-        record_fail "${CURRENT_STEP} (command failed: ${BASH_COMMAND})"
-        print_summary
-    fi
+    local failed_command="$BASH_COMMAND"
+    trap - ERR
+    record_fail "${CURRENT_STEP} (command failed: ${failed_command})"
+    print_summary 1
     exit "$rc"
 }
 
@@ -137,21 +146,23 @@ done
 # Basic environment validation
 # ---------------------------------------------------------------------------
 
+CURRENT_STEP="Validating operating system"
 [[ -r /etc/os-release ]] || die "/etc/os-release not found."
 # shellcheck disable=SC1091
 . /etc/os-release
-CURRENT_STEP="Validating operating system"
 
 case "${ID:-}:${VERSION_ID:-}" in
     ubuntu:24.04|debian:13)
+        record_ok "Supported operating system detected (${PRETTY_NAME:-unknown})"
         ;;
     *)
         warn "Validated target systems are Ubuntu 24.04 LTS and Debian 13."
         warn "Detected: ${PRETTY_NAME:-unknown}"
+        record_warn "Unvalidated operating system detected (${PRETTY_NAME:-unknown})"
         ;;
 esac
-record_ok "Operating system check completed (${PRETTY_NAME:-unknown})"
 
+CURRENT_STEP="Validating virtualization environment"
 if command -v systemd-detect-virt >/dev/null 2>&1; then
     VIRT="$(systemd-detect-virt 2>/dev/null || true)"
     case "$VIRT" in
@@ -207,8 +218,9 @@ record_ok "Sanitization confirmation accepted"
 
 if dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q '^install ok installed$'; then
     CURRENT_STEP="Preparing OpenSSH privilege separation directory"
-    install -d -m 0755 /run/sshd
-    [[ -d /run/sshd ]] || die "Unable to create /run/sshd."
+    install -d -o root -g root -m 0755 /run/sshd
+    [[ "$(stat -c '%U:%G:%a' /run/sshd)" == "root:root:755" ]] ||
+        die "/run/sshd has unexpected ownership or permissions."
     record_ok "OpenSSH privilege separation directory ready"
 
     CURRENT_STEP="Validating current OpenSSH configuration"
@@ -218,7 +230,14 @@ if dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q '^install o
 
     # ssh-keygen -A only regenerates the standard host-key paths. Refuse to
     # sanitize an installation that depends on a custom HostKey path.
+    CURRENT_STEP="Checking OpenSSH host-key paths"
+    SSHD_EFFECTIVE_CONFIG="$(/usr/sbin/sshd -T)" ||
+        die "Unable to read the effective OpenSSH configuration."
+    HOST_KEY_PATHS="$(awk '$1 == "hostkey" { print $2 }' <<< "$SSHD_EFFECTIVE_CONFIG")" ||
+        die "Unable to inspect the configured OpenSSH host-key paths."
+
     while IFS= read -r host_key; do
+        [[ -n "$host_key" ]] || continue
         case "$host_key" in
             /etc/ssh/ssh_host_rsa_key|\
             /etc/ssh/ssh_host_ecdsa_key|\
@@ -228,10 +247,11 @@ if dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q '^install o
                 die "Custom OpenSSH HostKey path detected: ${host_key}"
                 ;;
         esac
-    done < <(/usr/sbin/sshd -T | awk '$1 == "hostkey" { print $2 }')
+    done <<< "$HOST_KEY_PATHS"
     record_ok "OpenSSH host-key paths are supported"
 
     log "Installing OpenSSH host-key generation drop-in"
+    CURRENT_STEP="Installing OpenSSH host-key generation drop-in"
     mkdir -p "$SSH_DROPIN_DIR"
     cat > "$SSH_DROPIN_FILE" <<'EOF'
 # Installed by clean2clone.
@@ -255,14 +275,34 @@ EOF
 
     systemd-analyze verify ssh.service >/dev/null 2>&1 ||
         die "Unable to validate ssh.service after installing the drop-in."
+
+    SSH_EXEC_START_PRE="$(systemctl show ssh.service --property=ExecStartPre --value)" ||
+        die "Unable to read the effective ExecStartPre commands for ssh.service."
+    grep -Fq '/usr/bin/ssh-keygen -A' <<< "$SSH_EXEC_START_PRE" ||
+        die "ssh.service does not contain the host-key generation command."
+    grep -Fq '/usr/sbin/sshd -t' <<< "$SSH_EXEC_START_PRE" ||
+        die "ssh.service does not contain the OpenSSH validation command."
     record_ok "OpenSSH systemd drop-in installed and validated"
 
     log "Removing inherited OpenSSH host keys"
+    CURRENT_STEP="Removing inherited OpenSSH host keys"
     rm -f /etc/ssh/ssh_host_*
     if compgen -G "/etc/ssh/ssh_host_*" >/dev/null; then
         die "Some inherited OpenSSH host keys could not be removed."
     fi
     record_ok "Inherited OpenSSH host keys removed"
+
+    # Exercise the exact commands used by the systemd drop-in, then remove the
+    # test keys so the golden image still finishes without inherited keys.
+    log "Testing fresh OpenSSH host-key generation"
+    CURRENT_STEP="Testing fresh OpenSSH host-key generation"
+    /usr/bin/ssh-keygen -A >/dev/null
+    /usr/sbin/sshd -t
+    rm -f /etc/ssh/ssh_host_*
+    if compgen -G "/etc/ssh/ssh_host_*" >/dev/null; then
+        die "Generated test host keys could not be removed."
+    fi
+    record_ok "Fresh OpenSSH host-key generation tested; test keys removed"
 else
     log "openssh-server is not installed; no SSH host keys to sanitize"
     record_ok "OpenSSH not installed; no host keys required"
@@ -284,7 +324,11 @@ rm -f /var/lib/dbus/machine-id
 mkdir -p /var/lib/dbus
 ln -s /etc/machine-id /var/lib/dbus/machine-id
 [[ ! -s /etc/machine-id ]] || die "/etc/machine-id is not empty after reset."
-[[ -L /var/lib/dbus/machine-id ]] || die "/var/lib/dbus/machine-id is not a symlink."
+[[ "$(stat -c '%a' /etc/machine-id)" == "444" ]] ||
+    die "/etc/machine-id does not have mode 0444."
+[[ -L /var/lib/dbus/machine-id ]] &&
+    [[ "$(readlink /var/lib/dbus/machine-id)" == "/etc/machine-id" ]] ||
+    die "/var/lib/dbus/machine-id does not point to /etc/machine-id."
 record_ok "Machine-id reset and D-Bus link verified"
 
 # ---------------------------------------------------------------------------
@@ -307,15 +351,20 @@ fi
 
 rm -f /var/lib/systemd/random-seed
 [[ ! -e /var/lib/systemd/random-seed ]] || die "The systemd random seed still exists."
-record_ok "Systemd random seed removed"
 
 # systemd-boot may maintain an additional seed on the EFI System Partition.
 if [[ -d /sys/firmware/efi ]]; then
     if mountpoint -q /boot/efi; then
         rm -f /boot/efi/loader/random-seed
+        [[ ! -e /boot/efi/loader/random-seed ]] || die "The EFI random seed still exists."
+        record_ok "Systemd and EFI random seeds removed"
     else
         warn "UEFI detected but /boot/efi is not mounted; the EFI random seed was not checked."
+        record_ok "Systemd random seed removed"
+        record_warn "EFI random seed not checked because /boot/efi is not mounted"
     fi
+else
+    record_ok "Systemd random seed removed (EFI not in use)"
 fi
 
 log "Removing systemd machine credential secret"
@@ -383,25 +432,39 @@ if [[ -d /var/log ]]; then
         -path /var/log/journal -prune -o \
         -type f -exec truncate -s 0 -- {} +
 fi
+if [[ -d /var/log ]] && find /var/log -xdev \
+    -path /var/log/journal -prune -o \
+    -type f ! -empty -print -quit | grep -q .; then
+    die "A regular log file is not empty after truncation."
+fi
 record_ok "Regular log files truncated"
 
 log "Cleaning temporary directories"
 CURRENT_STEP="Cleaning temporary directories"
 for dir in /tmp /var/tmp; do
     if [[ -d "$dir" ]]; then
-        find "$dir" -xdev -mindepth 1 -delete 2>/dev/null || true
+        find "$dir" -xdev -mindepth 1 -delete
+        if find "$dir" -xdev -mindepth 1 -print -quit | grep -q .; then
+            die "${dir} is not empty after cleanup."
+        fi
     fi
 done
 record_ok "Temporary directories cleaned"
 
 log "Cleaning shell histories"
 CURRENT_STEP="Cleaning shell histories"
-rm -f /root/.bash_history /root/.zsh_history 2>/dev/null || true
+rm -f /root/.bash_history /root/.zsh_history
 
 if [[ -d /home ]]; then
     find /home -xdev -maxdepth 2 -type f \
         \( -name '.bash_history' -o -name '.zsh_history' \) \
-        -delete 2>/dev/null || true
+        -delete
+fi
+[[ ! -e /root/.bash_history && ! -e /root/.zsh_history ]] ||
+    die "A root shell history file still exists."
+if [[ -d /home ]] && find /home -xdev -maxdepth 2 -type f \
+    \( -name '.bash_history' -o -name '.zsh_history' \) -print -quit | grep -q .; then
+    die "A user shell history file still exists."
 fi
 record_ok "Shell histories removed"
 
