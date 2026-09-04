@@ -42,8 +42,9 @@ feature lists, and AI-created expansion pull requests are outside the scope.
 - Do not run `apt autoremove` or remove installed packages.
 - Do not broaden support claims beyond Ubuntu 24.04 LTS and Debian 13 without
   real testing on the newly claimed platform.
-- Keep the OpenSSH systemd drop-in as the only persistent integration unless
-  the owner explicitly changes this design decision.
+- Keep the OpenSSH `ssh.service` and optional `ssh.socket` systemd drop-ins as
+  the only persistent integrations unless the owner explicitly changes this
+  design decision.
 - Preserve the executable mode of `clean2clone.sh` (`100755`).
 - Preserve the MIT license and the credit `Joan Puiggali aka kopernix`.
 - Keep user-facing script output and repository documentation in English.
@@ -90,6 +91,9 @@ bash -n clean2clone.sh
 ./clean2clone.sh --version
 ./clean2clone.sh --help
 ```
+
+Do not run `./clean2clone.sh --check` outside a disposable supported VM merely
+for CI: it inspects the real host even though it does not repair or clean it.
 
 If ShellCheck is available, also run:
 
