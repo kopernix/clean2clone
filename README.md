@@ -55,7 +55,9 @@ sudo ./clean2clone.sh --yes --poweroff
 ```
 
 At the end it prints a verification summary. Green `[OK]` entries are checks
-that passed; a `[FAIL]` entry stops the script and identifies the failed step.
+that passed, yellow `[WARN]` entries need attention, and a red `[FAIL]` entry
+stops the script and identifies the failed step. The OpenSSH check actually
+generates temporary host keys, validates `sshd`, and removes those test keys.
 
 Run it as the last action inside the golden VM. Do not boot that VM again
 before converting it to a Proxmox template. If it is booted again, run the
@@ -73,6 +75,10 @@ script again before creating or updating the template.
 ## License
 
 MIT
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). Versions follow Semantic Versioning.
 
 ## Author
 
