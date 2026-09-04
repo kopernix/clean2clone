@@ -4,7 +4,7 @@
 
 - Repository: <https://github.com/kopernix/clean2clone>
 - Primary program: `clean2clone.sh`
-- Current implemented version: `1.2.0`
+- Current implemented version: `1.2.1`
 - Author: Joan Puiggali aka kopernix
 - Copyright: Copyright (c) 2026 Joan Puiggali aka kopernix
 - License: MIT
@@ -107,12 +107,14 @@ Required behavior:
 
 8. Reload systemd, validate the unit with `systemd-analyze verify`, and inspect
    the effective `ExecStartPre` commands.
-9. If `ssh.socket` is available, install
+9. Install
    `/etc/systemd/system/ssh.socket.d/10-generate-hostkeys.conf` with mode
    `0644`. Its `[Socket]` section must run
-   `ExecStartPre=/usr/bin/ssh-keygen -A`. Validate both the unit structure and
-   its effective command. This guarantees boot-time key generation before an
-   enabled Ubuntu socket begins listening, without a custom first-boot service.
+   `ExecStartPre=/usr/bin/ssh-keygen -A`. Installation must not depend on the
+   socket unit being visible before the next boot. Validate the file itself in
+   all cases, and validate the unit structure and effective command when the
+   unit is loaded. This guarantees boot-time key generation before an enabled
+   Ubuntu socket begins listening, without a custom first-boot service.
 10. Remove every `/etc/ssh/ssh_host_*` inherited host-key file.
 11. Exercise the clone behavior before completion: run `ssh-keygen -A`, validate
    with `sshd -t`, remove the generated test keys again, and verify none remain.
@@ -249,7 +251,8 @@ are binary `OK` or `FAIL`; any failure produces a non-zero exit status.
 It verifies:
 
 - A non-zero 32-character hexadecimal machine ID and matching D-Bus link.
-- OpenSSH service and optional socket drop-ins and their effective commands.
+- OpenSSH service and socket drop-ins, plus their effective commands when the
+  corresponding units are loaded.
 - A healthy active `ssh.service` or `ssh.socket` with neither unit failed.
 - Structural validity of the OpenSSH systemd units.
 - Every effective OpenSSH private/public host-key pair: existence, non-empty
@@ -284,10 +287,11 @@ After a successful run, the project-owned persistent files that may remain are:
 /etc/systemd/system/ssh.socket.d/10-generate-hostkeys.conf
 ```
 
-They exist only when `openssh-server` is installed, and the socket drop-in only
-when `ssh.socket` is available. All other mutations are sanitization of
-existing system state. `/run/sshd` is temporary because `/run` is a volatile
-runtime filesystem.
+They exist only when `openssh-server` is installed. The socket drop-in is
+installed even when `ssh.socket` is not currently visible; it remains harmless
+unless that unit is present. All other mutations are sanitization of existing
+system state. `/run/sshd` is temporary because `/run` is a volatile runtime
+filesystem.
 
 ## 10. Source conventions
 
@@ -342,6 +346,12 @@ Version 1.2.0 adds the non-destructive `--check` path and boot-time
 `ssh.socket` integration. It received Bash syntax, CLI, option-conflict, and
 isolated summary/error-path checks. Full clean, reboot, and post-check testing
 on disposable Ubuntu 24.04 LTS and Debian 13 VMs remains required.
+
+Version 1.2.1 removes the cleanup-time dependency on `ssh.socket` unit
+visibility and makes the post-reboot socket diagnostics more specific. It
+received Bash syntax, CLI, option-conflict, and isolated summary/error-path
+checks. A user-reported Ubuntu 24.04.4 reboot exposed the 1.2.0 defect; a full
+clean, reboot, and successful post-check with 1.2.1 remains required.
 
 ## 12. Versioning and changelog
 
