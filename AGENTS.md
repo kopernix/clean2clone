@@ -42,7 +42,7 @@ feature lists, and AI-created expansion pull requests are outside the scope.
 - Do not run `apt autoremove` or remove installed packages.
 - Do not broaden support claims beyond Ubuntu 24.04 LTS and Debian 13 without
   real testing on the newly claimed platform.
-- Keep the OpenSSH `ssh.service` and optional `ssh.socket` systemd drop-ins as
+- Keep the OpenSSH `ssh.service` and `ssh.socket` systemd drop-ins as
   the only persistent integrations unless the owner explicitly changes this
   design decision.
 - Preserve the executable mode of `clean2clone.sh` (`100755`).
