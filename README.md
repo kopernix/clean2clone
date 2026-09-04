@@ -80,6 +80,12 @@ MIT
 
 See [CHANGELOG.md](CHANGELOG.md). Versions follow Semantic Versioning.
 
+## Continuing with an AI coding agent
+
+Start with [AGENTS.md](AGENTS.md). It contains portable instructions for
+Codex, Claude Code, OpenCode, and other coding agents. The complete functional
+and technical specification is in [PROJECT_SPEC.md](PROJECT_SPEC.md).
+
 ## Author
 
 Joan Puiggali aka kopernix
