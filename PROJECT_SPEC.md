@@ -4,7 +4,7 @@
 
 - Repository: <https://github.com/kopernix/clean2clone>
 - Primary program: `clean2clone.sh`
-- Current implemented version: `1.2.2`
+- Current implemented version: `1.2.3`
 - Author: Joan Puiggali aka kopernix
 - Copyright: Copyright (c) 2026 Joan Puiggali aka kopernix
 - License: MIT
@@ -361,6 +361,13 @@ checking the standard key pairs directly. It received Bash syntax, CLI, and
 option-conflict checks. A user-reported Ubuntu 24.04.4 post-reboot check exposed
 the false failure caused by using `sshd -T` before `ssh.service` had created its
 runtime directory; a successful real-VM post-check with 1.2.2 remains required.
+
+Version 1.2.3 normalizes both the public key derived from each private key and
+the corresponding `.pub` file to their algorithm and encoded key fields before
+comparison. This avoids treating the optional `ssh-keygen -y` comment as key
+material. It received Bash syntax, CLI, option-conflict, and isolated RSA,
+ECDSA, and Ed25519 pair-comparison checks. A successful full real-VM
+post-reboot check with 1.2.3 remains required.
 
 ## 12. Versioning and changelog
 
