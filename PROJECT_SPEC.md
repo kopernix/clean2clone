@@ -4,7 +4,7 @@
 
 - Repository: <https://github.com/kopernix/clean2clone>
 - Primary program: `clean2clone.sh`
-- Current implemented version: `1.1.1`
+- Current implemented version: `1.2.0`
 - Author: Joan Puiggali aka kopernix
 - Copyright: Copyright (c) 2026 Joan Puiggali aka kopernix
 - License: MIT
@@ -40,7 +40,9 @@ The expected workflow is:
 3. Run `clean2clone.sh` as root as the last action in the VM.
 4. Prefer `sudo ./clean2clone.sh --poweroff` so the VM powers off immediately.
 5. Convert the powered-off VM into a Proxmox template.
-6. Do not boot the golden VM again before templating. If it is booted again,
+6. Boot a clone and run `sudo ./clean2clone.sh --check` to validate its
+   post-reboot state without changing it.
+7. Do not boot the golden VM again before templating. If it is booted again,
    run `clean2clone` again because boot recreates unique state.
 
 It must never be run on a production server. Containers such as LXC, OpenVZ,
@@ -52,6 +54,7 @@ Supported options:
 
 | Option | Meaning |
 | --- | --- |
+| `--check` | Run a read-only post-reboot integrity check and exit. |
 | `--poweroff` | Request system poweroff after successful sanitization. |
 | `-y`, `--yes` | Skip the interactive confirmation. |
 | `--version` | Print the version and exit without sanitizing. |
@@ -59,6 +62,8 @@ Supported options:
 
 Without `--yes`, the user must type the exact token `CLEAN2CLONE`. Unknown
 options are fatal. Root privileges are mandatory.
+
+`--check` cannot be combined with `--poweroff` or `--yes`.
 
 ## 5. Required sanitization behavior
 
@@ -102,15 +107,21 @@ Required behavior:
 
 8. Reload systemd, validate the unit with `systemd-analyze verify`, and inspect
    the effective `ExecStartPre` commands.
-9. Remove every `/etc/ssh/ssh_host_*` inherited host-key file.
-10. Exercise the clone behavior before completion: run `ssh-keygen -A`, validate
+9. If `ssh.socket` is available, install
+   `/etc/systemd/system/ssh.socket.d/10-generate-hostkeys.conf` with mode
+   `0644`. Its `[Socket]` section must run
+   `ExecStartPre=/usr/bin/ssh-keygen -A`. Validate both the unit structure and
+   its effective command. This guarantees boot-time key generation before an
+   enabled Ubuntu socket begins listening, without a custom first-boot service.
+10. Remove every `/etc/ssh/ssh_host_*` inherited host-key file.
+11. Exercise the clone behavior before completion: run `ssh-keygen -A`, validate
    with `sshd -t`, remove the generated test keys again, and verify none remain.
 
-The systemd drop-in is the only persistent integration installed by the
+The systemd drop-ins are the only persistent integrations installed by the
 project. `ssh-keygen -A` is intentionally used because it creates missing
 default keys without replacing existing keys. Ubuntu 24.04 normally uses
-systemd socket activation for OpenSSH, so `ssh.service` and its drop-in may run
-on the first incoming SSH connection rather than immediately at boot.
+systemd socket activation for OpenSSH; the socket drop-in ensures key
+generation happens as that socket activates during boot.
 
 If OpenSSH is not installed, record a successful not-applicable result and do
 not install the drop-in.
@@ -227,18 +238,56 @@ Do not add unconditional `OK` records after commands whose errors were ignored.
 If an error is intentionally tolerated, a later postcondition must prove the
 desired final state or the result must be `WARN`/`FAIL`.
 
+### 8.1 Post-reboot `--check` mode
+
+`--check` is a strictly observational integrity check. It must not create or
+delete files, generate host keys, start/restart/stop services, clean caches,
+alter network state, or power off. It accumulates all check results rather than
+stopping at the first failed postcondition. On supported systems its results
+are binary `OK` or `FAIL`; any failure produces a non-zero exit status.
+
+It verifies:
+
+- A non-zero 32-character hexadecimal machine ID and matching D-Bus link.
+- OpenSSH service and optional socket drop-ins and their effective commands.
+- A healthy active `ssh.service` or `ssh.socket` with neither unit failed.
+- Structural validity of the OpenSSH systemd units.
+- Every effective OpenSSH private/public host-key pair: existence, non-empty
+  content, matching public material, root ownership, and private mode `0600`.
+- Direct `sshd -t` validation when `/run/sshd` already exists. With a healthy
+  inactive socket-activated service, absence of that runtime directory is
+  valid because systemd creates it when the service starts; check mode must not
+  create it merely to make the test pass.
+- A non-empty secure systemd random seed and a non-failed seed service.
+- EFI seed validity when one is present and credential-secret validity whether
+  it remains absent or was securely recreated.
+- An active non-loopback interface, a global-scope address, and no failed
+  installed network-management service.
+- `apt-get check` with locking and package-cache writes disabled, plus an empty
+  `dpkg --audit` result.
+- Active journald with journals passing `journalctl --verify`.
+- `/var/log` accessibility; `/tmp` and `/var/tmp` as `root:root` mode `1777`.
+- Presence of `/root`, `/home`, and a configured hostname.
+
+The check demonstrates validity and operational readiness on the current VM.
+It cannot prove that a machine ID or SSH key differs from the golden VM using
+only the current post-reboot state. Demonstrating uniqueness requires comparing
+fingerprints/IDs between clones or against an external pre-clean baseline; the
+script must not persist the removed identity merely to enable that comparison.
+
 ## 9. Persistent filesystem changes
 
-After a successful run, the only project-owned persistent file that should
-remain is:
+After a successful run, the project-owned persistent files that may remain are:
 
 ```text
 /etc/systemd/system/ssh.service.d/10-generate-hostkeys.conf
+/etc/systemd/system/ssh.socket.d/10-generate-hostkeys.conf
 ```
 
-It exists only when `openssh-server` is installed. All other mutations are
-sanitization of existing system state. `/run/sshd` is temporary because `/run`
-is a volatile runtime filesystem.
+They exist only when `openssh-server` is installed, and the socket drop-in only
+when `ssh.socket` is available. All other mutations are sanitization of
+existing system state. `/run/sshd` is temporary because `/run` is a volatile
+runtime filesystem.
 
 ## 10. Source conventions
 
@@ -288,6 +337,11 @@ written. Do not upgrade that claim without evidence.
 Version 1.1.1 corrected repeat execution after host-key removal. It received
 Bash syntax, CLI, and isolated summary/error-path checks; its complete
 destructive VM acceptance matrix remains pending.
+
+Version 1.2.0 adds the non-destructive `--check` path and boot-time
+`ssh.socket` integration. It received Bash syntax, CLI, option-conflict, and
+isolated summary/error-path checks. Full clean, reboot, and post-check testing
+on disposable Ubuntu 24.04 LTS and Debian 13 VMs remains required.
 
 ## 12. Versioning and changelog
 
