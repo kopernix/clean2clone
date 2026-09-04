@@ -54,6 +54,9 @@ to skip this confirmation:
 sudo ./clean2clone.sh --yes --poweroff
 ```
 
+At the end it prints a verification summary. Green `[OK]` entries are checks
+that passed; a `[FAIL]` entry stops the script and identifies the failed step.
+
 Run it as the last action inside the golden VM. Do not boot that VM again
 before converting it to a Proxmox template. If it is booted again, run the
 script again before creating or updating the template.
