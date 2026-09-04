@@ -7,10 +7,11 @@ It removes machine-specific state such as the machine ID, OpenSSH host keys,
 random seeds, DHCP leases, logs and temporary files. Small systemd drop-ins
 generate fresh OpenSSH host keys when a clone starts.
 
-On Ubuntu, OpenSSH may use systemd socket activation. When `ssh.socket` is
-available, clean2clone installs a matching drop-in so the keys are generated
-as the socket activates during boot, before it begins listening. Service-based
-OpenSSH installations generate them before `ssh.service` starts.
+On Ubuntu, OpenSSH may use systemd socket activation. clean2clone installs a
+matching drop-in alongside the service drop-in, without relying on the socket
+unit being visible during sanitization. When `ssh.socket` is present, the keys
+are generated as it activates during boot, before it begins listening.
+Service-based OpenSSH installations generate them before `ssh.service` starts.
 
 There is no cloud-init integration and no custom first-boot service.
 
