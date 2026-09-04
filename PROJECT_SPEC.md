@@ -4,7 +4,7 @@
 
 - Repository: <https://github.com/kopernix/clean2clone>
 - Primary program: `clean2clone.sh`
-- Current implemented version: `1.1.0`
+- Current implemented version: `1.1.1`
 - Author: Joan Puiggali aka kopernix
 - Copyright: Copyright (c) 2026 Joan Puiggali aka kopernix
 - License: MIT
@@ -82,29 +82,35 @@ Required behavior:
 
 1. Create `/run/sshd` as `root:root` with mode `0755`. This is required because
    the volatile privilege-separation directory may be absent before `sshd -t`.
-2. Validate the existing OpenSSH configuration with `/usr/sbin/sshd -t`.
-3. Read the effective configuration with `/usr/sbin/sshd -T`.
-4. Accept only standard host-key paths that `ssh-keygen -A` can recreate:
+2. Run `/usr/bin/ssh-keygen -A` before validation. It creates only missing
+   default keys, which makes repeated clean2clone runs safe even when an
+   earlier run already removed every host key.
+3. Validate the existing OpenSSH configuration with `/usr/sbin/sshd -t` and
+   include its diagnostic output in a fatal summary entry if it fails.
+4. Read the effective configuration with `/usr/sbin/sshd -T`.
+5. Accept only standard host-key paths that `ssh-keygen -A` can recreate:
    `/etc/ssh/ssh_host_rsa_key`, `/etc/ssh/ssh_host_ecdsa_key`, and
    `/etc/ssh/ssh_host_ed25519_key`. A custom `HostKey` path is a fatal error.
-5. Install `/etc/systemd/system/ssh.service.d/10-generate-hostkeys.conf` with
+6. Install `/etc/systemd/system/ssh.service.d/10-generate-hostkeys.conf` with
    mode `0644`.
-6. The drop-in must clear the existing `ExecStartPre` list, then run, in order:
+7. The drop-in must clear the existing `ExecStartPre` list, then run, in order:
 
    ```ini
    ExecStartPre=/usr/bin/ssh-keygen -A
    ExecStartPre=/usr/sbin/sshd -t
    ```
 
-7. Reload systemd, validate the unit with `systemd-analyze verify`, and inspect
+8. Reload systemd, validate the unit with `systemd-analyze verify`, and inspect
    the effective `ExecStartPre` commands.
-8. Remove every `/etc/ssh/ssh_host_*` inherited host-key file.
-9. Exercise the clone behavior before completion: run `ssh-keygen -A`, validate
+9. Remove every `/etc/ssh/ssh_host_*` inherited host-key file.
+10. Exercise the clone behavior before completion: run `ssh-keygen -A`, validate
    with `sshd -t`, remove the generated test keys again, and verify none remain.
 
 The systemd drop-in is the only persistent integration installed by the
 project. `ssh-keygen -A` is intentionally used because it creates missing
-default keys without replacing existing keys on later boots.
+default keys without replacing existing keys. Ubuntu 24.04 normally uses
+systemd socket activation for OpenSSH, so `ssh.service` and its drop-in may run
+on the first incoming SSH connection rather than immediately at boot.
 
 If OpenSSH is not installed, record a successful not-applicable result and do
 not install the drop-in.
@@ -278,6 +284,10 @@ Version 1.1.0 received Bash syntax checks plus isolated normal, explicit-fatal,
 ERR-trap, and late-error summary tests. A complete destructive run on both
 supported disposable VM types was still pending when this specification was
 written. Do not upgrade that claim without evidence.
+
+Version 1.1.1 corrected repeat execution after host-key removal. It received
+Bash syntax, CLI, and isolated summary/error-path checks; its complete
+destructive VM acceptance matrix remains pending.
 
 ## 12. Versioning and changelog
 
