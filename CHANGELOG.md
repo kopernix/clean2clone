@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-04
+
+### Fixed
+
+- Verify the standard OpenSSH host-key pairs directly in `--check` instead of
+  using `sshd -T`. On Ubuntu with socket activation, `/run/sshd` may
+  legitimately remain absent until `ssh.service` starts, and `sshd -T` reports
+  that absence even when the generated keys and socket are healthy.
+- Preserve the strictly non-destructive check contract: the checker does not
+  create `/run/sshd` merely to make OpenSSH validation pass.
+
 ## [1.2.1] - 2026-09-04
 
 ### Fixed
