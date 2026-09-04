@@ -7,11 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-04
+
 ### Added
 
 - Add portable AI-agent maintenance instructions in `AGENTS.md`, a Claude Code
   entry point in `CLAUDE.md`, and the complete project specification and
   decision record in `PROJECT_SPEC.md`.
+
+### Fixed
+
+- Generate any missing default OpenSSH host keys before the initial `sshd -t`
+  check. This makes the script repeatable after an earlier sanitization run,
+  including on Ubuntu systems where socket activation has not started
+  `ssh.service` after reboot.
+- Include the actual `sshd -t` diagnostic in the fatal verification entry.
+
+### Changed
+
+- Document that Ubuntu socket activation may defer host-key generation until
+  the first incoming SSH connection.
 
 ## [1.1.0] - 2026-09-04
 
