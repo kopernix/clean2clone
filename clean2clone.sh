@@ -11,7 +11,7 @@
 # No cloud-init. No custom first-boot service.
 #
 # The only persistent integrations installed by this script are small systemd
-# drop-ins for ssh.service and, when available, ssh.socket. They generate
+# drop-ins for ssh.service and ssh.socket. They generate
 # missing host keys before OpenSSH starts or its socket begins listening.
 #
 # Run this as the LAST action before powering off the golden VM.
@@ -20,7 +20,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 AUTO_POWEROFF=0
 ASSUME_YES=0
 CHECK_ONLY=0
@@ -226,15 +226,20 @@ check_openssh_integrity() {
         record_fail "OpenSSH service does not use the expected pre-start commands"
     fi
 
+    if [[ -r "$SSH_SOCKET_DROPIN_FILE" ]] &&
+       grep -Fxq 'ExecStartPre=/usr/bin/ssh-keygen -A' "$SSH_SOCKET_DROPIN_FILE"; then
+        record_ok "OpenSSH socket host-key drop-in is present"
+    else
+        record_fail "OpenSSH socket host-key drop-in is missing or invalid"
+    fi
+
     load_state="$(systemctl show ssh.socket --property=LoadState --value 2>/dev/null || true)"
     if [[ "$load_state" == "loaded" ]]; then
-        if [[ -r "$SSH_SOCKET_DROPIN_FILE" ]] &&
-           grep -Fxq 'ExecStartPre=/usr/bin/ssh-keygen -A' "$SSH_SOCKET_DROPIN_FILE" &&
-           socket_pre="$(systemctl show ssh.socket --property=ExecStartPre --value 2>/dev/null)" &&
+        if socket_pre="$(systemctl show ssh.socket --property=ExecStartPre --value 2>/dev/null)" &&
            grep -Fq '/usr/bin/ssh-keygen -A' <<< "$socket_pre"; then
-            record_ok "OpenSSH socket generates missing host keys during activation"
+            record_ok "OpenSSH socket uses host-key generation during activation"
         else
-            record_fail "OpenSSH socket host-key generation is missing or inactive"
+            record_fail "OpenSSH socket does not use the installed host-key generation command"
         fi
     else
         record_ok "OpenSSH socket activation is not installed; service activation applies"
@@ -607,11 +612,11 @@ EOF
 
     chmod 0644 "$SSH_DROPIN_FILE"
 
-    SSH_SOCKET_PRESENT=0
-    SSH_SOCKET_LOAD_STATE="$(systemctl show ssh.socket --property=LoadState --value 2>/dev/null || true)"
-    if [[ "$SSH_SOCKET_LOAD_STATE" == "loaded" ]]; then
-        mkdir -p "$SSH_SOCKET_DROPIN_DIR"
-        cat > "$SSH_SOCKET_DROPIN_FILE" <<'EOF'
+    # Install this unconditionally with openssh-server. Unit visibility can
+    # vary before the next boot; an unused drop-in is harmless on systems
+    # without ssh.socket and is ready if the socket unit later becomes visible.
+    mkdir -p "$SSH_SOCKET_DROPIN_DIR"
+    cat > "$SSH_SOCKET_DROPIN_FILE" <<'EOF'
 # Installed by clean2clone.
 #
 # Ubuntu may start ssh.socket at boot while deferring ssh.service until the
@@ -620,9 +625,7 @@ EOF
 [Socket]
 ExecStartPre=/usr/bin/ssh-keygen -A
 EOF
-        chmod 0644 "$SSH_SOCKET_DROPIN_FILE"
-        SSH_SOCKET_PRESENT=1
-    fi
+    chmod 0644 "$SSH_SOCKET_DROPIN_FILE"
 
     systemctl daemon-reload
 
@@ -639,16 +642,20 @@ EOF
     grep -Fq '/usr/sbin/sshd -t' <<< "$SSH_EXEC_START_PRE" ||
         die "ssh.service does not contain the OpenSSH validation command."
 
-    if [[ "$SSH_SOCKET_PRESENT" -eq 1 ]]; then
+    grep -Fxq 'ExecStartPre=/usr/bin/ssh-keygen -A' "$SSH_SOCKET_DROPIN_FILE" ||
+        die "The ssh.socket host-key generation drop-in is invalid."
+
+    SSH_SOCKET_LOAD_STATE="$(systemctl show ssh.socket --property=LoadState --value 2>/dev/null || true)"
+    if [[ "$SSH_SOCKET_LOAD_STATE" == "loaded" ]]; then
         systemd-analyze verify ssh.socket >/dev/null 2>&1 ||
             die "Unable to validate ssh.socket after installing the drop-in."
         SSH_SOCKET_EXEC_START_PRE="$(systemctl show ssh.socket --property=ExecStartPre --value)" ||
             die "Unable to read the effective ExecStartPre commands for ssh.socket."
         grep -Fq '/usr/bin/ssh-keygen -A' <<< "$SSH_SOCKET_EXEC_START_PRE" ||
             die "ssh.socket does not contain the host-key generation command."
-        record_ok "OpenSSH service and socket drop-ins installed and validated"
+        record_ok "OpenSSH service and socket drop-ins installed and active commands validated"
     else
-        record_ok "OpenSSH service drop-in installed and validated"
+        record_ok "OpenSSH service and socket drop-ins installed; service commands validated"
     fi
 
     log "Removing inherited OpenSSH host keys"
