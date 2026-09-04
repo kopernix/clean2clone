@@ -21,7 +21,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 AUTO_POWEROFF=0
 ASSUME_YES=0
 
@@ -49,6 +49,14 @@ SUMMARY_PRINTED=0
 
 log()  { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
+
+validate_sshd() {
+    local output
+    if ! output="$(/usr/sbin/sshd -t 2>&1)"; then
+        output="${output//$'\n'/; }"
+        die "OpenSSH configuration validation failed${output:+: ${output}}"
+    fi
+}
 
 record_ok() {
     SUMMARY+=("OK|$1")
@@ -223,9 +231,18 @@ if dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q '^install o
         die "/run/sshd has unexpected ownership or permissions."
     record_ok "OpenSSH privilege separation directory ready"
 
+    # A previous clean2clone run may already have removed all host keys. On
+    # Ubuntu, socket activation also means ssh.service may not have run merely
+    # because the VM rebooted. Generate only missing default keys so this
+    # script remains safe to run again; all keys are removed later.
+    CURRENT_STEP="Preparing OpenSSH host keys for validation"
+    log "Preparing OpenSSH host keys for validation"
+    /usr/bin/ssh-keygen -A >/dev/null
+    record_ok "OpenSSH host keys available for validation"
+
     CURRENT_STEP="Validating current OpenSSH configuration"
     log "Validating current OpenSSH configuration"
-    /usr/sbin/sshd -t
+    validate_sshd
     record_ok "OpenSSH configuration valid"
 
     # ssh-keygen -A only regenerates the standard host-key paths. Refuse to
@@ -297,7 +314,7 @@ EOF
     log "Testing fresh OpenSSH host-key generation"
     CURRENT_STEP="Testing fresh OpenSSH host-key generation"
     /usr/bin/ssh-keygen -A >/dev/null
-    /usr/sbin/sshd -t
+    validate_sshd
     rm -f /etc/ssh/ssh_host_*
     if compgen -G "/etc/ssh/ssh_host_*" >/dev/null; then
         die "Generated test host keys could not be removed."
