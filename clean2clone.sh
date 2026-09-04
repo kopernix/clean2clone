@@ -3,6 +3,11 @@
 # clean2clone.sh
 # Prepare Ubuntu 24.04 LTS / Debian 13 for cloning as a Proxmox VE VM template.
 #
+# Author: Joan Puiggali aka kopernix
+# Copyright (c) 2026 Joan Puiggali aka kopernix
+# Repository: https://github.com/kopernix/clean2clone
+# License: MIT
+#
 # No cloud-init. No custom first-boot service.
 #
 # The only persistent integration installed by this script is a small systemd
