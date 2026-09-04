@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add portable AI-agent maintenance instructions in `AGENTS.md`, a Claude Code
+  entry point in `CLAUDE.md`, and the complete project specification and
+  decision record in `PROJECT_SPEC.md`.
+
 ## [1.1.0] - 2026-09-04
 
 ### Added
