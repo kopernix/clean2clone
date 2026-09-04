@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-04
+
+### Fixed
+
+- Always install the OpenSSH `ssh.socket` host-key drop-in when
+  `openssh-server` is installed. This avoids depending on whether systemd
+  exposes the socket unit during sanitization and fixes missing host keys after
+  reboot on affected Ubuntu 24.04 systems.
+- Report a missing socket drop-in separately from an installed drop-in whose
+  command is not active, while keeping `--check` strictly non-destructive.
+
 ## [1.2.0] - 2026-09-04
 
 ### Added
