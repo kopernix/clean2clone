@@ -70,3 +70,9 @@ script again before creating or updating the template.
 ## License
 
 MIT
+
+## Author
+
+Joan Puiggali aka kopernix
+
+Project repository: <https://github.com/kopernix/clean2clone>
