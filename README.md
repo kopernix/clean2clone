@@ -7,6 +7,10 @@ It removes machine-specific state such as the machine ID, OpenSSH host keys,
 random seeds, DHCP leases, logs and temporary files. A small `ssh.service`
 drop-in generates fresh OpenSSH host keys when a clone starts.
 
+On Ubuntu, OpenSSH may use systemd socket activation. In that case the keys
+are generated when `ssh.service` starts for the first incoming connection,
+not necessarily immediately when the VM boots.
+
 There is no cloud-init integration and no custom first-boot service.
 
 ## Scope
