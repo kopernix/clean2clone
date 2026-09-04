@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-04
+
+### Fixed
+
+- Normalize `ssh-keygen -y` output before comparing it with the corresponding
+  public host-key file. Some OpenSSH versions append a comment such as
+  `root@hostname`; that comment is not cryptographic key material and caused
+  valid RSA, ECDSA, and Ed25519 pairs to be reported as invalid.
+
 ## [1.2.2] - 2026-09-04
 
 ### Fixed
