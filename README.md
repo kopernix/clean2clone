@@ -4,12 +4,13 @@
 Debian 13 virtual machine to be used as a Proxmox VE template.
 
 It removes machine-specific state such as the machine ID, OpenSSH host keys,
-random seeds, DHCP leases, logs and temporary files. A small `ssh.service`
-drop-in generates fresh OpenSSH host keys when a clone starts.
+random seeds, DHCP leases, logs and temporary files. Small systemd drop-ins
+generate fresh OpenSSH host keys when a clone starts.
 
-On Ubuntu, OpenSSH may use systemd socket activation. In that case the keys
-are generated when `ssh.service` starts for the first incoming connection,
-not necessarily immediately when the VM boots.
+On Ubuntu, OpenSSH may use systemd socket activation. When `ssh.socket` is
+available, clean2clone installs a matching drop-in so the keys are generated
+as the socket activates during boot, before it begins listening. Service-based
+OpenSSH installations generate them before `ssh.service` starts.
 
 There is no cloud-init integration and no custom first-boot service.
 
@@ -67,9 +68,33 @@ Run it as the last action inside the golden VM. Do not boot that VM again
 before converting it to a Proxmox template. If it is booted again, run the
 script again before creating or updating the template.
 
+## Post-reboot integrity check
+
+After booting a clone, run:
+
+```bash
+sudo ./clean2clone.sh --check
+```
+
+This mode is read-only: it does not generate keys, start or restart services,
+repair files, clean data, or power off the VM. It checks the state created
+after boot and reports every result as `OK` or `FAIL`, then exits non-zero if
+any check failed.
+
+The check covers the regenerated machine ID, D-Bus identity, OpenSSH host-key
+pairs and activation units, random-seed state, credential-secret state,
+network interfaces and addresses, APT/DPKG health, journald, log and temporary
+directories, home-directory roots, and hostname availability.
+
+It can prove that the current machine ID and SSH keys are structurally valid,
+but a single VM cannot prove that they differ from the golden image without a
+saved external baseline. Compare values across two clones if uniqueness itself
+must be demonstrated.
+
 ## Options
 
 ```text
+--check        Run a non-destructive post-reboot integrity check
 --poweroff     Power off automatically after sanitizing
 -y, --yes      Skip interactive confirmation
 --version      Show the script version
