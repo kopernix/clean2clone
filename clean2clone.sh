@@ -10,10 +10,9 @@
 #
 # No cloud-init. No custom first-boot service.
 #
-# The only persistent integration installed by this script is a small systemd
-# drop-in for ssh.service which runs "ssh-keygen -A" before "sshd -t".
-# This ensures that clones whose inherited SSH host keys were removed can
-# start OpenSSH normally and receive fresh host keys automatically.
+# The only persistent integrations installed by this script are small systemd
+# drop-ins for ssh.service and, when available, ssh.socket. They generate
+# missing host keys before OpenSSH starts or its socket begins listening.
 #
 # Run this as the LAST action before powering off the golden VM.
 #
@@ -21,12 +20,15 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 AUTO_POWEROFF=0
 ASSUME_YES=0
+CHECK_ONLY=0
 
 SSH_DROPIN_DIR="/etc/systemd/system/ssh.service.d"
 SSH_DROPIN_FILE="${SSH_DROPIN_DIR}/10-generate-hostkeys.conf"
+SSH_SOCKET_DROPIN_DIR="/etc/systemd/system/ssh.socket.d"
+SSH_SOCKET_DROPIN_FILE="${SSH_SOCKET_DROPIN_DIR}/10-generate-hostkeys.conf"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_GREEN=$'\033[32m'
@@ -46,6 +48,7 @@ WARN_COUNT=0
 FAIL_COUNT=0
 CURRENT_STEP="Starting"
 SUMMARY_PRINTED=0
+SUMMARY_TITLE="clean2clone verification summary"
 
 log()  { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -79,7 +82,7 @@ print_summary() {
     SUMMARY_PRINTED=1
 
     printf '\n%s\n' '===================================================================='
-    printf ' clean2clone verification summary\n'
+    printf ' %s\n' "$SUMMARY_TITLE"
     printf '%s\n' '===================================================================='
 
     local result status detail
@@ -120,6 +123,306 @@ on_error() {
 
 trap on_error ERR
 
+check_result() {
+    local description="$1"
+    shift
+
+    if "$@"; then
+        record_ok "$description"
+    else
+        record_fail "$description"
+    fi
+}
+
+check_machine_identity() {
+    local machine_id dbus_machine_id
+
+    if [[ -r /etc/machine-id ]] &&
+       machine_id="$(tr -d '\n' < /etc/machine-id)" &&
+       [[ "$machine_id" =~ ^[0-9a-f]{32}$ ]] &&
+       [[ "$machine_id" != "00000000000000000000000000000000" ]]; then
+        record_ok "A valid machine-id was established after boot"
+    else
+        record_fail "A valid machine-id was not established after boot"
+    fi
+
+    if [[ -L /var/lib/dbus/machine-id ]] &&
+       [[ "$(readlink /var/lib/dbus/machine-id 2>/dev/null)" == "/etc/machine-id" ]] &&
+       dbus_machine_id="$(tr -d '\n' < /var/lib/dbus/machine-id 2>/dev/null)" &&
+       [[ -n "${machine_id:-}" && "$dbus_machine_id" == "$machine_id" ]]; then
+        record_ok "D-Bus machine-id matches the system machine-id"
+    else
+        record_fail "D-Bus machine-id does not match the system machine-id"
+    fi
+}
+
+check_ssh_host_keys() {
+    local effective_config host_key_paths host_key mode owner derived public
+    local keys_ok=1
+
+    if ! effective_config="$(/usr/sbin/sshd -T 2>&1)"; then
+        record_fail "OpenSSH effective configuration could not be read: ${effective_config//$'\n'/; }"
+        return
+    fi
+
+    if ! host_key_paths="$(awk '$1 == "hostkey" { print $2 }' <<< "$effective_config")" ||
+       [[ -z "$host_key_paths" ]]; then
+        record_fail "OpenSSH has no effective host-key paths"
+        return
+    fi
+
+    while IFS= read -r host_key; do
+        [[ -n "$host_key" ]] || continue
+
+        if [[ ! -s "$host_key" || ! -s "${host_key}.pub" ]]; then
+            keys_ok=0
+            continue
+        fi
+
+        owner="$(stat -c '%U:%G' "$host_key" 2>/dev/null || true)"
+        mode="$(stat -c '%a' "$host_key" 2>/dev/null || true)"
+        if [[ "$owner" != "root:root" || "$mode" != "600" ]]; then
+            keys_ok=0
+            continue
+        fi
+
+        if ! derived="$(ssh-keygen -y -f "$host_key" 2>/dev/null)"; then
+            keys_ok=0
+            continue
+        fi
+        public="$(awk 'NR == 1 { print $1 " " $2 }' "${host_key}.pub" 2>/dev/null || true)"
+        [[ "$derived" == "$public" ]] || keys_ok=0
+    done <<< "$host_key_paths"
+
+    if [[ "$keys_ok" -eq 1 ]]; then
+        record_ok "OpenSSH host key pairs exist, match, and have safe permissions"
+    else
+        record_fail "One or more OpenSSH host key pairs are missing, invalid, or unsafe"
+    fi
+}
+
+check_openssh_integrity() {
+    local load_state service_pre socket_pre output activation_ok=0
+
+    if ! dpkg-query -W -f='${Status}' openssh-server 2>/dev/null |
+        grep -q '^install ok installed$'; then
+        record_ok "OpenSSH is not installed; SSH checks are not applicable"
+        return
+    fi
+
+    if [[ -r "$SSH_DROPIN_FILE" ]] &&
+       grep -Fxq 'ExecStartPre=/usr/bin/ssh-keygen -A' "$SSH_DROPIN_FILE" &&
+       grep -Fxq 'ExecStartPre=/usr/sbin/sshd -t' "$SSH_DROPIN_FILE"; then
+        record_ok "OpenSSH service host-key drop-in is present"
+    else
+        record_fail "OpenSSH service host-key drop-in is missing or invalid"
+    fi
+
+    if service_pre="$(systemctl show ssh.service --property=ExecStartPre --value 2>/dev/null)" &&
+       grep -Fq '/usr/bin/ssh-keygen -A' <<< "$service_pre" &&
+       grep -Fq '/usr/sbin/sshd -t' <<< "$service_pre"; then
+        record_ok "OpenSSH service uses the expected pre-start commands"
+    else
+        record_fail "OpenSSH service does not use the expected pre-start commands"
+    fi
+
+    load_state="$(systemctl show ssh.socket --property=LoadState --value 2>/dev/null || true)"
+    if [[ "$load_state" == "loaded" ]]; then
+        if [[ -r "$SSH_SOCKET_DROPIN_FILE" ]] &&
+           grep -Fxq 'ExecStartPre=/usr/bin/ssh-keygen -A' "$SSH_SOCKET_DROPIN_FILE" &&
+           socket_pre="$(systemctl show ssh.socket --property=ExecStartPre --value 2>/dev/null)" &&
+           grep -Fq '/usr/bin/ssh-keygen -A' <<< "$socket_pre"; then
+            record_ok "OpenSSH socket generates missing host keys during activation"
+        else
+            record_fail "OpenSSH socket host-key generation is missing or inactive"
+        fi
+    else
+        record_ok "OpenSSH socket activation is not installed; service activation applies"
+    fi
+
+    if systemctl is-active --quiet ssh.service || systemctl is-active --quiet ssh.socket; then
+        activation_ok=1
+    fi
+    if [[ "$activation_ok" -eq 1 ]] &&
+       ! systemctl is-failed --quiet ssh.service &&
+       ! systemctl is-failed --quiet ssh.socket; then
+        record_ok "OpenSSH service or socket is active and neither unit is failed"
+    else
+        record_fail "OpenSSH has no healthy active service or socket"
+    fi
+
+    if systemd-analyze verify ssh.service >/dev/null 2>&1 &&
+       { [[ "$load_state" != "loaded" ]] ||
+         systemd-analyze verify ssh.socket >/dev/null 2>&1; }; then
+        record_ok "OpenSSH systemd units pass structural verification"
+    else
+        record_fail "OpenSSH systemd unit verification failed"
+    fi
+
+    check_ssh_host_keys
+
+    # Do not create /run/sshd or start anything in check mode. If the runtime
+    # directory already exists, perform the strongest direct configuration
+    # test. With an inactive socket-activated service its absence is valid.
+    if [[ -d /run/sshd ]]; then
+        if output="$(/usr/sbin/sshd -t 2>&1)"; then
+            record_ok "OpenSSH direct configuration test passed"
+        else
+            record_fail "OpenSSH direct configuration test failed: ${output//$'\n'/; }"
+        fi
+    elif systemctl is-active --quiet ssh.socket; then
+        record_ok "OpenSSH runtime directory is correctly deferred to socket activation"
+    else
+        record_fail "OpenSSH runtime directory is missing without active socket activation"
+    fi
+}
+
+check_random_state() {
+    local owner mode
+
+    if [[ -s /var/lib/systemd/random-seed ]]; then
+        owner="$(stat -c '%U:%G' /var/lib/systemd/random-seed 2>/dev/null || true)"
+        mode="$(stat -c '%a' /var/lib/systemd/random-seed 2>/dev/null || true)"
+        if [[ "$owner" == "root:root" && "$mode" == "600" ]] &&
+           ! systemctl is-failed --quiet systemd-random-seed.service; then
+            record_ok "Systemd random seed was re-established securely"
+        else
+            record_fail "Systemd random seed has unsafe metadata or its service failed"
+        fi
+    else
+        record_fail "Systemd random seed was not re-established after boot"
+    fi
+
+    if [[ -d /sys/firmware/efi ]] && mountpoint -q /boot/efi &&
+       [[ -e /boot/efi/loader/random-seed ]]; then
+        if [[ -s /boot/efi/loader/random-seed ]]; then
+            record_ok "EFI random seed exists and is non-empty"
+        else
+            record_fail "EFI random seed exists but is empty"
+        fi
+    else
+        record_ok "EFI random seed is not applicable or not managed on this system"
+    fi
+
+    if [[ ! -e /var/lib/systemd/credential.secret ]]; then
+        record_ok "Systemd credential secret remains absent until needed"
+    else
+        owner="$(stat -c '%U:%G' /var/lib/systemd/credential.secret 2>/dev/null || true)"
+        mode="$(stat -c '%a' /var/lib/systemd/credential.secret 2>/dev/null || true)"
+        if [[ -s /var/lib/systemd/credential.secret &&
+              "$owner" == "root:root" && "$mode" == "600" ]]; then
+            record_ok "Systemd credential secret was recreated securely"
+        else
+            record_fail "Systemd credential secret exists with invalid content or metadata"
+        fi
+    fi
+}
+
+check_network_state() {
+    local unit load_state failed=0
+
+    if ip -o link show up | awk '$2 != "lo:" { found=1 } END { exit !found }'; then
+        record_ok "At least one non-loopback network interface is up"
+    else
+        record_fail "No non-loopback network interface is up"
+    fi
+
+    if ip -o addr show up scope global | grep -q .; then
+        record_ok "At least one global-scope IP address is configured"
+    else
+        record_fail "No global-scope IP address is configured"
+    fi
+
+    for unit in NetworkManager.service systemd-networkd.service networking.service; do
+        load_state="$(systemctl show "$unit" --property=LoadState --value 2>/dev/null || true)"
+        if [[ "$load_state" == "loaded" ]] && systemctl is-failed --quiet "$unit"; then
+            failed=1
+        fi
+    done
+    if [[ "$failed" -eq 0 ]]; then
+        record_ok "Installed network-management services are not failed"
+    else
+        record_fail "An installed network-management service is failed"
+    fi
+}
+
+check_runtime_and_logs() {
+    local dir metadata
+
+    if systemctl is-active --quiet systemd-journald.service &&
+       journalctl --verify >/dev/null 2>&1; then
+        record_ok "Systemd journal service and journal files are healthy"
+    else
+        record_fail "Systemd journal service or journal verification failed"
+    fi
+
+    if [[ -d /var/log && -r /var/log && -w /var/log ]]; then
+        record_ok "System log directory is accessible"
+    else
+        record_fail "System log directory is not accessible"
+    fi
+
+    for dir in /tmp /var/tmp; do
+        metadata="$(stat -c '%U:%G:%a' "$dir" 2>/dev/null || true)"
+        if [[ -d "$dir" && "$metadata" == "root:root:1777" ]]; then
+            record_ok "${dir} exists with root:root mode 1777"
+        else
+            record_fail "${dir} is missing or has incorrect ownership or permissions"
+        fi
+    done
+
+    if [[ -d /root && -d /home ]]; then
+        record_ok "Root and user home directory roots remain present"
+    else
+        record_fail "Root or user home directory root is missing"
+    fi
+}
+
+run_integrity_check() {
+    local apt_output dpkg_output hostname_value
+
+    SUMMARY_TITLE="clean2clone post-reboot integrity check"
+    log "Running non-destructive post-reboot integrity checks"
+
+    check_machine_identity
+    check_openssh_integrity
+    check_random_state
+    check_network_state
+
+    if apt_output="$(apt-get check \
+        -o Debug::NoLocking=1 \
+        -o Dir::Cache::pkgcache= \
+        -o Dir::Cache::srcpkgcache= 2>&1)"; then
+        record_ok "APT dependency check passed"
+    else
+        record_fail "APT dependency check failed: ${apt_output//$'\n'/; }"
+    fi
+
+    if dpkg_output="$(dpkg --audit 2>&1)" && [[ -z "$dpkg_output" ]]; then
+        record_ok "DPKG reports no partially installed packages"
+    else
+        record_fail "DPKG audit reported a problem: ${dpkg_output//$'\n'/; }"
+    fi
+
+    check_runtime_and_logs
+
+    hostname_value="$(hostnamectl --static 2>/dev/null || true)"
+    if [[ -n "$hostname_value" && -s /etc/hostname ]]; then
+        record_ok "System hostname remains configured"
+    else
+        record_fail "System hostname configuration is missing"
+    fi
+
+    print_summary
+    if [[ "$FAIL_COUNT" -eq 0 ]]; then
+        printf 'The post-reboot integrity check passed. No repair action was performed.\n'
+        return 0
+    fi
+
+    printf 'The post-reboot integrity check failed. No repair action was performed.\n' >&2
+    return 1
+}
+
 usage() {
     cat <<EOF
 clean2clone ${VERSION}
@@ -128,6 +431,7 @@ Usage:
   sudo $0 [options]
 
 Options:
+  --check        Run a non-destructive post-reboot integrity check.
   --poweroff     Power off automatically after sanitizing.
   -y, --yes      Skip interactive confirmation.
   --version      Show version.
@@ -135,11 +439,15 @@ Options:
 
 Recommended:
   sudo $0 --poweroff
+
+Post-reboot check:
+  sudo $0 --check
 EOF
 }
 
 for arg in "$@"; do
     case "$arg" in
+        --check)    CHECK_ONLY=1 ;;
         --poweroff) AUTO_POWEROFF=1 ;;
         -y|--yes)   ASSUME_YES=1 ;;
         --version)  echo "$VERSION"; exit 0 ;;
@@ -147,6 +455,11 @@ for arg in "$@"; do
         *)          die "Unknown option: $arg" ;;
     esac
 done
+
+if [[ "$CHECK_ONLY" -eq 1 &&
+      ( "$AUTO_POWEROFF" -eq 1 || "$ASSUME_YES" -eq 1 ) ]]; then
+    die "--check cannot be combined with --poweroff or --yes."
+fi
 
 [[ $EUID -eq 0 ]] || die "Run this script as root."
 
@@ -182,6 +495,14 @@ fi
 
 [[ -d /run/systemd/system ]] || die "systemd is not running."
 record_ok "Full systemd VM environment detected"
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+    if run_integrity_check; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Confirmation
@@ -285,6 +606,24 @@ ExecStartPre=/usr/sbin/sshd -t
 EOF
 
     chmod 0644 "$SSH_DROPIN_FILE"
+
+    SSH_SOCKET_PRESENT=0
+    SSH_SOCKET_LOAD_STATE="$(systemctl show ssh.socket --property=LoadState --value 2>/dev/null || true)"
+    if [[ "$SSH_SOCKET_LOAD_STATE" == "loaded" ]]; then
+        mkdir -p "$SSH_SOCKET_DROPIN_DIR"
+        cat > "$SSH_SOCKET_DROPIN_FILE" <<'EOF'
+# Installed by clean2clone.
+#
+# Ubuntu may start ssh.socket at boot while deferring ssh.service until the
+# first connection. Generate missing host keys before the socket listens so
+# post-boot state is complete without requiring an incoming connection.
+[Socket]
+ExecStartPre=/usr/bin/ssh-keygen -A
+EOF
+        chmod 0644 "$SSH_SOCKET_DROPIN_FILE"
+        SSH_SOCKET_PRESENT=1
+    fi
+
     systemctl daemon-reload
 
     command -v systemd-analyze >/dev/null 2>&1 ||
@@ -299,7 +638,18 @@ EOF
         die "ssh.service does not contain the host-key generation command."
     grep -Fq '/usr/sbin/sshd -t' <<< "$SSH_EXEC_START_PRE" ||
         die "ssh.service does not contain the OpenSSH validation command."
-    record_ok "OpenSSH systemd drop-in installed and validated"
+
+    if [[ "$SSH_SOCKET_PRESENT" -eq 1 ]]; then
+        systemd-analyze verify ssh.socket >/dev/null 2>&1 ||
+            die "Unable to validate ssh.socket after installing the drop-in."
+        SSH_SOCKET_EXEC_START_PRE="$(systemctl show ssh.socket --property=ExecStartPre --value)" ||
+            die "Unable to read the effective ExecStartPre commands for ssh.socket."
+        grep -Fq '/usr/bin/ssh-keygen -A' <<< "$SSH_SOCKET_EXEC_START_PRE" ||
+            die "ssh.socket does not contain the host-key generation command."
+        record_ok "OpenSSH service and socket drop-ins installed and validated"
+    else
+        record_ok "OpenSSH service drop-in installed and validated"
+    fi
 
     log "Removing inherited OpenSSH host keys"
     CURRENT_STEP="Removing inherited OpenSSH host keys"
